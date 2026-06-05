@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEON VECTOR - Definitive Edition</title>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; background: #000; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; width: 100vw; }
+        #game-container { box-shadow: 0 0 60px rgba(0, 255, 255, 0.4); border: 2px solid #111; }
+    </style>
+</head>
+<body>
+
+<div id="game-container"></div>
+
+<script>
+// --- NEON GLOW SHADER ---
+const NeonShader = `
+precision mediump float;
+uniform sampler2D uMainSampler;
+varying vec2 outTexCoord;
+void main() {
+    vec4 color = texture2D(uMainSampler, outTexCoord);
+    vec4 sum = vec4(0.0);
+    for(int i = -2; i <= 2; i++) {
+        for(int j = -2; j <= 2; j++) {
+            sum += texture2D(uMainSampler, outTexCoord + vec2(i, j) * 0.002);
+        }
+    }
+    gl_FragColor = color + (sum / 12.0) * 2.2;
+}
+`;
+
+class NeonPostFX extends Phaser.Renderer.WebGL.Pipelines.PostFXPipeline {
+    constructor(game) { super({ game, fragShader: NeonShader }); }
+}
+
+const CONFIG = {
+    INITIAL_SPEED: 580,
+    MAX_SPEED: 2000,
+    ACCEL_K: 0.015,
+    GRAVITY: 4400,
+    JUMP_VELOCITY: -1300, 
+    DASH_SURGE: 2.4,
+    DASH_MS: 180,
+    COLORS: { CYAN: 0x00ffff, MAGENTA: 0xff00ff, LIME: 0x00ff00, WHITE: 0xffffff }
+};
+
+// --- PROCEDURAL SYNTH ENGINE ---
+const Synth = {
+    ctx: null,
+    bgmStarted: false,
+    init() {
+        try { this.ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) { console.error("Audio error"); }
+    },
+    playTone(freq, type, decay, vol = 0.05) {
+        if(!this.ctx || this.ctx.state === 'suspended') return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+        gain.gain.setValueAtTime(vol, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.0001, this.ctx.currentTime + decay);
+        osc.connect(gain); gain.connect(this.ctx.destination);
+        osc.start(); osc.stop(this.ctx.currentTime + decay);
+    },
+    playNoise(decay, vol = 0.05) {
+        if(!this.ctx || this.ctx.state === 'suspended') return;
+        const bufferSize = this.ctx.sampleRate * decay;
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+        const source = this.ctx.createBufferSource();
+        source.buffer = buffer;
+        const gain = this.ctx.createGain();
+        gain.gain.setValueAtTime(vol, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.0001, this.ctx.currentTime + decay);
+        source.connect(gain); gain.connect(this.ctx.destination);
+        source.start();
+    },
+    startBGM() {
+        if (this.bgmStarted) return;
+        this.bgmStarted = true;
+        let step = 0;
+        const notes = [110, 110, 146, 110, 130, 110, 164, 123]; 
+        setInterval(() => {
+            if(!this.ctx || this.ctx.state === 'suspended') return;
+            this.playTone(notes[step % notes.length], 'triangle', 0.3, 0.02);
+            if(step % 4 === 0) this.playTone(55, 'sine', 0.5, 0.04); 
+            step++;
+        }, 190);
+    }
+};
+
+class MainScene extends Phaser.Scene {
+    constructor() { super('MainScene'); }
+
+    create() {
+        const { width, height } = this.scale;
+        this.initGame();
+
+        this.cameras.main.setPostPipeline(NeonPostFX);
+        this.createAssets();
+
+        // HARDENED PHYSICS (Bias prevents clipping at high velocity)
+        this.physics.world.TILE_BIAS = 64; 
+
+        this.platforms = this.physics.add.staticGroup();
+        this.obstacles = this.physics.add.staticGroup();
+
+        // PIXEL TAIL
+        this.tailEmitter = this.add.particles(0, 0, 'pixel', {
+            speed: { min: 20, max: 150 },
+            angle: { min: 170, max: 190 },
+            scale: { start: 1.5, end: 0 },
+            alpha: { start: 0.6, end: 0 },
+            lifespan: 500,
+            frequency: 10,
+            blendMode: 'ADD'
+        });
+
+        this.shards = this.add.particles(0, 0, 'pixel', {
+            speed: { min: -700, max: 700 }, scale: { start: 4, end: 0 }, lifespan: 600, emitting: false
+        });
+
+        // Player
+        this.player = this.add.rectangle(200, 300, 30, 30, 0x000000, 0);
+        this.player.setStrokeStyle(3, CONFIG.COLORS.CYAN);
+        this.physics.add.existing(this.player);
+        this.player.body.setGravityY(CONFIG.GRAVITY);
+        this.tailEmitter.startFollow(this.player);
+
+        // UI
+        this.scoreText = this.add.text(30, 30, 'SCORE: 0', { font: 'bold 28px Courier New', fill: '#00ffff' }).setScrollFactor(0).setDepth(20);
+        this.highScoreText = this.add.text(30, 65, `HIGH: ${this.highScore}`, { font: '18px Courier New', fill: '#ff00ff' }).setScrollFactor(0).setDepth(20);
+        
+        this.startOverlay = this.add.container(0,0).setScrollFactor(0).setDepth(100);
+        const modal = this.add.rectangle(0,0, width, height, 0x000000, 0.85).setOrigin(0);
+        const title = this.add.text(width/2, height/2 - 40, 'NEON VECTOR', { font: 'bold 60px Courier New', fill: '#00ffff' }).setOrigin(0.5);
+        const hint = this.add.text(width/2, height/2 + 40, 'SPACE: JUMP | SHIFT: DASH', { font: '20px Courier New', fill: '#ffffff' }).setOrigin(0.5);
+        this.startOverlay.add([modal, title, hint]);
+
+        this.spaceKey = this.input.keyboard.addKey('SPACE');
+        this.shiftKey = this.input.keyboard.addKey('SHIFT');
+
+        for(let i=0; i<10; i++) { this.spawnPlatform(this.lastPlatformX + (i==0?0:220), 400, 500, 'SPRINT'); }
+
+        this.cameras.main.startFollow(this.player, true, 1, 0.05, -350, 0);
+        
+        // COLLISION RESOLUTION (Prevention of Clipping and Dash Stuck)
+        this.physics.add.collider(this.player, this.platforms, null, (p, platform) => {
+            if (this.playerState === 'DASHING') return false; 
+            const isFalling = p.body.velocity.y >= 0;
+            const isAbove = p.y < platform.y + 6; 
+            return isFalling && isAbove;
+        });
+
+        this.physics.add.overlap(this.player, this.obstacles, (p, o) => this.handleObstacleCollision(o));
+        
+        this.physics.pause();
+    }
+
+    initGame() {
+        this.gameStarted = false; this.isGameOver = false; this.playerState = 'NORMAL';
+        this.hasDashedInAir = false; this.canMidAirJump = false;
+        this.lastPlatformX = 0; this.lastPlatformY = 400; this.score = 0; this.gameTime = 0;
+        this.highScore = parseInt(localStorage.getItem('neon_high_score')) || 0;
+        if (!Synth.ctx) Synth.init();
+    }
+
+    createAssets() {
+        const createTex = (key, color, w, h) => {
+            const g = this.make.graphics({x: 0, y: 0, add: false});
+            g.lineStyle(2, color).strokeRect(1, 1, w-2, h-2);
+            g.generateTexture(key, w, h);
+        };
+        createTex('plat_cyan', CONFIG.COLORS.CYAN, 100, 20);
+        createTex('plat_lime', CONFIG.COLORS.LIME, 100, 20);
+        createTex('plat_magenta', CONFIG.COLORS.MAGENTA, 100, 20);
+        createTex('wall_tex', CONFIG.COLORS.WHITE, 20, 75);
+        const px = this.make.graphics({x: 0, y: 0, add: false});
+        px.fillStyle(0xffffff).fillRect(0, 0, 4, 4);
+        px.generateTexture('pixel', 4, 4);
+    }
+
+    update(time, delta) {
+        if (this.isGameOver) return;
+        if (!this.gameStarted) {
+            if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) this.startGame();
+            return;
+        }
+
+        const dt = delta / 1000;
+        this.gameTime += dt;
+        this.currentSpeed = CONFIG.INITIAL_SPEED + (CONFIG.MAX_SPEED - CONFIG.INITIAL_SPEED) * (1 - Math.exp(-CONFIG.ACCEL_K * this.gameTime));
+        
+        const vx = this.playerState === 'DASHING' ? this.currentSpeed * CONFIG.DASH_SURGE : this.currentSpeed;
+        this.player.body.setVelocityX(vx);
+
+        if (this.player.body.touching.down) {
+            this.hasDashedInAir = false; this.canMidAirJump = false;
+            if (this.playerState === 'NORMAL') this.player.setStrokeStyle(3, CONFIG.COLORS.CYAN);
+        }
+
+        if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) {
+            if (this.player.body.touching.down || this.canMidAirJump) {
+                this.executeJump();
+            }
+        }
+
+        if (Phaser.Input.Keyboard.JustDown(this.shiftKey) && this.playerState === 'NORMAL' && !this.hasDashedInAir) {
+            this.triggerDash();
+        }
+
+        this.score += (this.currentSpeed / 100) * dt * 25;
+        this.scoreText.setText(`SCORE: ${Math.floor(this.score)}`);
+        
+        while (this.player.x > this.lastPlatformX - 2200) this.spawnSequence();
+        if (this.player.y > this.lastPlatformY + 300) this.startFallDeath();
+
+        this.cleanup();
+    }
+
+    startGame() {
+        this.gameStarted = true;
+        this.physics.resume();
+        this.startOverlay.setVisible(false);
+        if (Synth.ctx && Synth.ctx.state === 'suspended') Synth.ctx.resume();
+        Synth.startBGM();
+    }
+
+    executeJump() {
+        this.player.body.setVelocityY(CONFIG.JUMP_VELOCITY);
+        Synth.playTone(420, 'triangle', 0.15); 
+        this.tweens.add({ targets: this.player, scaleY: 1.4, duration: 100, yoyo: true });
+        if (!this.player.body.touching.down) {
+            this.canMidAirJump = false;
+            this.player.setStrokeStyle(3, CONFIG.COLORS.CYAN);
+        }
+    }
+
+    triggerDash() {
+        this.playerState = 'DASHING';
+        this.hasDashedInAir = true; 
+        this.canMidAirJump = true; 
+        Synth.playTone(160, 'sawtooth', 0.3, 0.08);
+        this.player.body.allowGravity = false;
+        this.player.body.setVelocityY(0);
+        this.player.setScale(2.2, 0.4);
+        this.player.setStrokeStyle(4, CONFIG.COLORS.WHITE); 
+
+        this.time.delayedCall(CONFIG.DASH_MS, () => {
+            this.playerState = 'NORMAL';
+            this.player.body.allowGravity = true;
+            this.player.setScale(1);
+            if (this.canMidAirJump) this.player.setStrokeStyle(3, CONFIG.COLORS.WHITE);
+        });
+    }
+
+    spawnSequence() {
+        const phrase = ['SPRINT', 'UNDULATION', 'GAUNTLET'][Math.floor(Math.random()*3)];
+        for(let i=0; i<4; i++) {
+            let w = Phaser.Math.Between(450, 800);
+            let g = Phaser.Math.Between(220, 300); // 15% Reduction applied here
+            let yOff = 0;
+            let type = 'normal';
+
+            if(phrase === 'SPRINT') yOff = Phaser.Math.Between(-30, 30);
+            else if(phrase === 'UNDULATION') yOff = Math.sin(this.lastPlatformX * 0.01) * 120;
+            else {
+                yOff = Phaser.Math.Between(-180, 180);
+                g = yOff > 0 ? 425 : 210; // 15% Reduction applied to Gauntlet gaps
+                if(Math.random() > 0.4) type = 'wall';
+            }
+
+            const targetY = Phaser.Math.Clamp(this.lastPlatformY + yOff, 150, 500);
+            this.spawnPlatform(this.lastPlatformX + g, targetY, w, phrase, type);
+        }
+    }
+
+    spawnPlatform(x, y, w, phrase, type) {
+        const keys = { SPRINT: 'plat_cyan', UNDULATION: 'plat_lime', GAUNTLET: 'plat_magenta' };
+        const plat = this.platforms.create(x, y, keys[phrase]).setOrigin(0);
+        plat.setDisplaySize(w, 20);
+        plat.refreshBody();
+        if (type === 'wall') {
+            const wall = this.obstacles.create(x + w/2, y - 48, 'wall_tex');
+            wall.isBreakable = true; wall.refreshBody();
+        }
+        this.lastPlatformX = x + w; this.lastPlatformY = y;
+    }
+
+    handleObstacleCollision(obs) {
+        if (this.playerState === 'DASHING' && obs.isBreakable) {
+            this.shards.emitParticleAt(obs.x, obs.y, 40);
+            Synth.playNoise(0.2, 0.2);
+            obs.destroy();
+            this.cameras.main.shake(120, 0.015);
+            this.score += 3000;
+            // SMASH REWARD: Guaranteed jump refresh
+            this.canMidAirJump = true; 
+            this.player.setStrokeStyle(4, CONFIG.COLORS.WHITE);
+            this.player.body.setVelocityY(-200); 
+        } else if (!this.isGameOver) {
+            this.finalizeDeath();
+        }
+    }
+
+    startFallDeath() {
+        if (this.isGameOver) return;
+        this.isGameOver = true;
+        this.cameras.main.stopFollow();
+        this.time.delayedCall(350, () => this.finalizeDeath());
+    }
+
+    finalizeDeath() {
+        if (this.physics.world.isPaused) return; 
+        this.isGameOver = true; this.physics.pause();
+        Synth.playNoise(0.5, 0.3);
+        if(this.score > this.highScore) localStorage.setItem('neon_high_score', Math.floor(this.score));
+        this.shards.emitParticleAt(this.player.x, this.player.y, 60);
+        this.player.setVisible(false);
+        this.cameras.main.flash(200, 255, 0, 0);
+        this.time.delayedCall(500, () => this.scene.restart());
+    }
+
+    cleanup() {
+        this.platforms.getChildren().forEach(p => { if (p.x < this.player.x - 1800) p.destroy(); });
+        this.obstacles.getChildren().forEach(o => { if (o.x < this.player.x - 1800) o.destroy(); });
+    }
+}
+
+new Phaser.Game({
+    type: Phaser.WEBGL,
+    parent: 'game-container',
+    scale: {
+        mode: Phaser.Scale.FIT,
+        autoCenter: Phaser.Scale.CENTER_BOTH,
+        width: 1024,
+        height: 600
+    },
+    backgroundColor: '#000000',
+    physics: { 
+        default: 'arcade', 
+        arcade: { 
+            debug: false, 
+            fps: 120, 
+            tileBias: 64 
+        } 
+    },
+    scene: MainScene
+});
+</script>
+</body>
+</html>
