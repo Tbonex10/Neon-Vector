@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NEON VECTOR - Definitive Edition</title>
+    <title>NEON VECTOR - Chain Dash Edition</title>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
     <style>
         body { margin: 0; padding: 0; background: #000; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; width: 100vw; }
@@ -103,7 +103,6 @@ class MainScene extends Phaser.Scene {
         this.cameras.main.setPostPipeline(NeonPostFX);
         this.createAssets();
 
-        // HARDENED PHYSICS (Bias prevents clipping at high velocity)
         this.physics.world.TILE_BIAS = 64; 
 
         this.platforms = this.physics.add.staticGroup();
@@ -138,7 +137,7 @@ class MainScene extends Phaser.Scene {
         this.startOverlay = this.add.container(0,0).setScrollFactor(0).setDepth(100);
         const modal = this.add.rectangle(0,0, width, height, 0x000000, 0.85).setOrigin(0);
         const title = this.add.text(width/2, height/2 - 40, 'NEON VECTOR', { font: 'bold 60px Courier New', fill: '#00ffff' }).setOrigin(0.5);
-        const hint = this.add.text(width/2, height/2 + 40, 'SPACE: JUMP | SHIFT: DASH', { font: '20px Courier New', fill: '#ffffff' }).setOrigin(0.5);
+        const hint = this.add.text(width/2, height/2 + 40, 'SPACE: JUMP | SHIFT: DASH\nSMASH WALLS TO RESET DASH', { font: '18px Courier New', fill: '#ffffff', align: 'center' }).setOrigin(0.5);
         this.startOverlay.add([modal, title, hint]);
 
         this.spaceKey = this.input.keyboard.addKey('SPACE');
@@ -148,7 +147,6 @@ class MainScene extends Phaser.Scene {
 
         this.cameras.main.startFollow(this.player, true, 1, 0.05, -350, 0);
         
-        // COLLISION RESOLUTION (Prevention of Clipping and Dash Stuck)
         this.physics.add.collider(this.player, this.platforms, null, (p, platform) => {
             if (this.playerState === 'DASHING') return false; 
             const isFalling = p.body.velocity.y >= 0;
@@ -262,7 +260,7 @@ class MainScene extends Phaser.Scene {
         const phrase = ['SPRINT', 'UNDULATION', 'GAUNTLET'][Math.floor(Math.random()*3)];
         for(let i=0; i<4; i++) {
             let w = Phaser.Math.Between(450, 800);
-            let g = Phaser.Math.Between(220, 300); // 15% Reduction applied here
+            let g = Phaser.Math.Between(220, 300); 
             let yOff = 0;
             let type = 'normal';
 
@@ -270,7 +268,7 @@ class MainScene extends Phaser.Scene {
             else if(phrase === 'UNDULATION') yOff = Math.sin(this.lastPlatformX * 0.01) * 120;
             else {
                 yOff = Phaser.Math.Between(-180, 180);
-                g = yOff > 0 ? 425 : 210; // 15% Reduction applied to Gauntlet gaps
+                g = yOff > 0 ? 425 : 210; 
                 if(Math.random() > 0.4) type = 'wall';
             }
 
@@ -298,8 +296,11 @@ class MainScene extends Phaser.Scene {
             obs.destroy();
             this.cameras.main.shake(120, 0.015);
             this.score += 3000;
-            // SMASH REWARD: Guaranteed jump refresh
+            
+            // --- RESOURCE RESET ON WALL SMASH ---
             this.canMidAirJump = true; 
+            this.hasDashedInAir = false; // RESET DASH ABILITY
+            
             this.player.setStrokeStyle(4, CONFIG.COLORS.WHITE);
             this.player.body.setVelocityY(-200); 
         } else if (!this.isGameOver) {
