@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NEON VECTOR - High Intensity Edition</title>
+    <title>NEON VECTOR - Flow Edition</title>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
     <style>
         body { margin: 0; padding: 0; background: #000; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; width: 100vw; }
@@ -38,9 +38,9 @@ class NeonPostFX extends Phaser.Renderer.WebGL.Pipelines.PostFXPipeline {
 
 const CONFIG = {
     INITIAL_SPEED: 580,
-    MAX_SPEED: 2000,
-    ACCEL_K: 0.015,
-    GRAVITY: 4400,
+    MAX_SPEED: 1750,
+    ACCEL_K: 0.008,
+    GRAVITY: 4000,        // Lowered from 4400 for better jump distance
     JUMP_VELOCITY: -1300, 
     DASH_SURGE: 2.4,
     DASH_MS: 180,
@@ -134,13 +134,14 @@ class MainScene extends Phaser.Scene {
         this.startOverlay = this.add.container(0,0).setScrollFactor(0).setDepth(100);
         const modal = this.add.rectangle(0,0, width, height, 0x000000, 0.85).setOrigin(0);
         const title = this.add.text(width/2, height/2 - 40, 'NEON VECTOR', { font: 'bold 60px Courier New', fill: '#00ffff' }).setOrigin(0.5);
-        const hint = this.add.text(width/2, height/2 + 40, 'SPACE: JUMP | SHIFT: DASH\nCHAIN DASH THROUGH ALL PHASES', { font: '18px Courier New', fill: '#ffffff', align: 'center' }).setOrigin(0.5);
+        const hint = this.add.text(width/2, height/2 + 40, 'SPACE: JUMP | SHIFT: DASH', { font: '20px Courier New', fill: '#ffffff' }).setOrigin(0.5);
         this.startOverlay.add([modal, title, hint]);
 
         this.spaceKey = this.input.keyboard.addKey('SPACE');
         this.shiftKey = this.input.keyboard.addKey('SHIFT');
 
-        for(let i=0; i<10; i++) { this.spawnPlatform(this.lastPlatformX + (i==0?0:220), 400, 500, 'SPRINT'); }
+        // Spawning initial track with very tight gaps
+        for(let i=0; i<10; i++) { this.spawnPlatform(this.lastPlatformX + (i==0?0:180), 400, 500, 'SPRINT'); }
 
         this.cameras.main.startFollow(this.player, true, 1, 0.05, -350, 0);
         
@@ -254,21 +255,26 @@ class MainScene extends Phaser.Scene {
         const phrase = ['SPRINT', 'UNDULATION', 'GAUNTLET'][Math.floor(Math.random()*3)];
         for(let i=0; i<4; i++) {
             let w = Phaser.Math.Between(450, 800);
-            let g = Phaser.Math.Between(220, 300); 
+            
+            // SPEED ADAPTIVE GAP LOGIC
+            // Gaps are now scaled based on current velocity so early game is not impossible
+            let speedFactor = this.currentSpeed / CONFIG.INITIAL_SPEED;
+            let g = Phaser.Math.Between(160, 240) * speedFactor; 
+            
             let yOff = 0;
             let type = 'normal';
 
             if(phrase === 'SPRINT') {
-                yOff = Phaser.Math.Between(-30, 30);
+                yOff = Phaser.Math.Between(-25, 25);
             } 
             else if(phrase === 'UNDULATION') {
-                yOff = Math.sin(this.lastPlatformX * 0.01) * 120;
-                // ADDED: Walls in the Undulation (Lime Green) Phase
+                yOff = Math.sin(this.lastPlatformX * 0.01) * 110;
                 if(Math.random() > 0.6) type = 'wall'; 
             }
             else {
-                yOff = Phaser.Math.Between(-180, 180);
-                g = yOff > 0 ? 425 : 210; 
+                yOff = Phaser.Math.Between(-160, 160);
+                // Reduce jump penalty: smaller gaps when jumping high
+                g = yOff > 0 ? (350 * speedFactor) : (180 * speedFactor); 
                 if(Math.random() > 0.4) type = 'wall';
             }
 
@@ -296,11 +302,8 @@ class MainScene extends Phaser.Scene {
             obs.destroy();
             this.cameras.main.shake(120, 0.015);
             this.score += 3000;
-            
-            // CHAIN DASH LOGIC: Reset jump AND dash ability on wall smash
             this.canMidAirJump = true; 
             this.hasDashedInAir = false; 
-            
             this.player.setStrokeStyle(4, CONFIG.COLORS.WHITE);
             this.player.body.setVelocityY(-200); 
         } else if (!this.isGameOver) {
